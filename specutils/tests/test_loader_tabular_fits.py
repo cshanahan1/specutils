@@ -2,16 +2,35 @@ import os
 import shutil
 import urllib
 import warnings
-
 import pytest
 import astropy.units as u
 import numpy as np
 from astropy.io import fits
-
+from astropy.io.fits.verify import VerifyWarning
+from astropy.table import Table
+from astropy.units import UnitsWarning
+from astropy.wcs import FITSFixedWarning, WCS
+from astropy.io.registry import IORegistryError
+from astropy.nddata import StdDevUncertainty, InverseVariance, VarianceUncertainty
+from astropy.tests.helper import quantity_allclose
+from astropy.utils.exceptions import AstropyUserWarning
 from numpy.testing import assert_allclose
-
 from .conftest import remote_access
 from .. import Spectrum1D, SpectrumCollection, SpectrumList
+
+try:
+    import bz2  # noqa
+except ImportError:
+    HAS_BZ2 = False
+else:
+    HAS_BZ2 = True
+
+try:
+    import lzma  # noqa
+except ImportError:
+    HAS_LZMA = False
+else:
+    HAS_LZMA = True
 
 
 @pytest.mark.parametrize("spectral_axis",
@@ -112,7 +131,7 @@ def test_tabular_fits_header(tmp_path):
     disp = np.linspace(1, 1.2, 21) * u.AA
     flux = np.random.normal(0., 1.0e-14, disp.shape[0]) * u.Jy
     hdr = fits.header.Header({'TELESCOP': 'Leviathan', 'APERTURE': 1.8,
-                              'OBSERVER': 'Parsons', 'NAXIS': 1, 'NAXIS1': 8})
+                              'OBSERVER': 'Parsons'}) #  'NAXIS': 1, 'NAXIS1': 8})
 
     spectrum = Spectrum1D(flux=flux, spectral_axis=disp, meta={'header': hdr})
     tmpfile = str(tmp_path / '_tst.fits')
@@ -120,10 +139,30 @@ def test_tabular_fits_header(tmp_path):
 
     # Read it in and check against the original
     with fits.open(tmpfile) as hdulist:
+        print(hdulist.info())
+        
+        # Check the primary header
+        print(f'HDU0:\n {hdulist[0].header}')
         assert hdulist[0].header['NAXIS'] == 0
+        # assert hdulist[0].header['OBSERVER'] == 'Parsons' 
+        # This fails because tabular-fits puts header in HDU1
+
+        # Check HDU 1 header
+        print(f'HDU1:\n {hdulist[1].header}')
         assert hdulist[1].header['NAXIS'] == 2
         assert hdulist[1].header['NAXIS2'] == disp.shape[0]
         assert hdulist[1].header['OBSERVER'] == 'Parsons'
+
+    # test getheader method for retrieving header
+    hdr = fits.getheader(tmpfile)  #  this gets the primary header
+    # assert hdr['OBSERVER'] == 'Parsons' 
+    # Fails because header is HDU1, not HDO0
+
+    # adds something to the primary header
+    fits.setval(tmpfile, 'OBSERVER', value='Cruz')
+
+    # see if header data gets read back in to meta
+    spectrum.read(tmpfile)
 
     # Now write with updated header information from spectrum.meta
     spectrum.meta.update({'OBSERVER': 'Rosse', 'EXPTIME': 32.1, 'NAXIS2': 12})
@@ -145,6 +184,9 @@ def test_tabular_fits_header(tmp_path):
         assert 'MYHEADER' not in hdulist[1].header
         assert 'OBSDATE' not in hdulist[0].header
         assert 'OBSDATE' not in hdulist[1].header
+
+
+#  TODO:  Make an expected fail test for the header keywords that should be in HDU0
 
 
 @pytest.mark.filterwarnings("ignore:The unit 'Angstrom' has been deprecated")
